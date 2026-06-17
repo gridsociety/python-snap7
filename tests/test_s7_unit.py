@@ -9,8 +9,12 @@ from s7._s7commplus_client import (
     _parse_read_response,
     _build_write_payload,
     _parse_write_response,
+    _build_area_read_payload,
+    _build_area_write_payload,
+    _build_symbolic_read_payload,
+    _build_symbolic_write_payload,
 )
-from s7.codec import encode_pvalue_blob
+from s7.codec import encode_object_qualifier, encode_pvalue_blob
 from s7.connection import S7CommPlusConnection, _element_size
 from s7.protocol import DataType, ElementID, ObjectId
 from s7.vlq import (
@@ -173,6 +177,42 @@ class TestPayloadAgreement:
         write_payload = _build_write_payload([(1, 0, bytes([1, 2, 3, 4]))])
         assert isinstance(read_payload, bytes)
         assert isinstance(write_payload, bytes)
+
+
+class TestSequenceNumber:
+    """Verify all payload builders include a SequenceNumber after ObjectQualifier."""
+
+    @staticmethod
+    def _has_sequence_number(payload: bytes) -> bool:
+        oq = encode_object_qualifier()
+        idx = bytes(payload).find(oq)
+        assert idx >= 0, "ObjectQualifier not found in payload"
+        seq_offset = idx + len(oq)
+        return payload[seq_offset : seq_offset + 1] == encode_uint32_vlq(1)
+
+    def test_read_payload_has_sequence_number(self) -> None:
+        payload = _build_read_payload([(1, 0, 4)])
+        assert self._has_sequence_number(payload)
+
+    def test_write_payload_has_sequence_number(self) -> None:
+        payload = _build_write_payload([(1, 0, bytes([1, 2, 3, 4]))])
+        assert self._has_sequence_number(payload)
+
+    def test_area_read_payload_has_sequence_number(self) -> None:
+        payload = _build_area_read_payload(82, 0, 4)
+        assert self._has_sequence_number(payload)
+
+    def test_area_write_payload_has_sequence_number(self) -> None:
+        payload = _build_area_write_payload(82, 0, b"\x00\x00\x00\x00")
+        assert self._has_sequence_number(payload)
+
+    def test_symbolic_read_payload_has_sequence_number(self) -> None:
+        payload = _build_symbolic_read_payload(0x8A0E0001, [1, 4])
+        assert self._has_sequence_number(payload)
+
+    def test_symbolic_write_payload_has_sequence_number(self) -> None:
+        payload = _build_symbolic_write_payload(0x8A0E0001, [1, 4], b"\x01")
+        assert self._has_sequence_number(payload)
 
 
 # -- Connection unit tests --

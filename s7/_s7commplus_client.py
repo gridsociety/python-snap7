@@ -484,6 +484,7 @@ def _build_read_payload(items: list[tuple[int, int, int]]) -> bytes:
     for addr in addresses:
         payload += addr
     payload += encode_object_qualifier()
+    payload += encode_uint32_vlq(1)
     payload += struct.pack(">I", 0)
 
     return bytes(payload)
@@ -570,6 +571,7 @@ def _build_write_payload(items: list[tuple[int, int, bytes]]) -> bytes:
         payload += encode_pvalue_blob(data)
     payload += bytes([0x00])
     payload += encode_object_qualifier()
+    payload += encode_uint32_vlq(1)
     payload += struct.pack(">I", 0)
 
     return bytes(payload)
@@ -622,6 +624,7 @@ def _build_area_read_payload(area_rid: int, start: int, size: int) -> bytes:
     payload += encode_uint32_vlq(field_count)
     payload += addr_bytes
     payload += encode_object_qualifier()
+    payload += encode_uint32_vlq(1)
     payload += struct.pack(">I", 0)
     return bytes(payload)
 
@@ -643,6 +646,7 @@ def _build_area_write_payload(area_rid: int, start: int, data: bytes) -> bytes:
     payload += encode_pvalue_blob(data)
     payload += bytes([0x00])
     payload += encode_object_qualifier()
+    payload += encode_uint32_vlq(1)
     payload += struct.pack(">I", 0)
     return bytes(payload)
 
@@ -675,6 +679,7 @@ def _build_symbolic_read_payload(access_area: int, lids: list[int], symbol_crc: 
     payload += encode_uint32_vlq(field_count)
     payload += addr_bytes
     payload += encode_object_qualifier()
+    payload += encode_uint32_vlq(1)
     payload += struct.pack(">I", 0)
     return bytes(payload)
 
@@ -702,6 +707,7 @@ def _build_symbolic_write_payload(access_area: int, lids: list[int], data: bytes
     payload += encode_pvalue_blob(data)
     payload += bytes([0x00])
     payload += encode_object_qualifier()
+    payload += encode_uint32_vlq(1)
     payload += struct.pack(">I", 0)
     return bytes(payload)
 
