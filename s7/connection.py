@@ -482,19 +482,22 @@ class S7CommPlusConnection:
         self._integrity_id_write = 0
         self._iso_conn.disconnect()
 
-    def send_request(self, function_code: int, payload: bytes = b"") -> bytes:
+    def send_request(self, function_code: int, payload: bytes = b"", integrity_tail: int = 4, reassemble: bool = False) -> bytes:
         """Send an S7CommPlus request and receive the response.
 
-        For V2+ with IntegrityId tracking enabled, the IntegrityId is
-        appended after the 14-byte request header (as a VLQ uint32).
-        Read vs write counters are selected based on the function code.
+        For V2+ with IntegrityId tracking enabled, the IntegrityId is spliced into
+        the request payload just before its trailing fill bytes. Read vs write
+        counters are selected based on the function code.
 
         Args:
             function_code: S7CommPlus function code
             payload: Request payload (after the 14-byte request header)
+            integrity_tail: number of trailing payload bytes the V2 IntegrityId is
+                inserted *before* — 4 for GetMultiVariables/SetMultiVariables (a
+                trailing UInt32), 5 for Explore (a trailing UInt32 + filler byte).
 
         Returns:
-            Response payload (after the 14-byte response header)
+            Response payload (after the 10-byte response header)
         """
         if not self._connected:
             from snap7.error import S7ConnectionError
@@ -512,7 +515,8 @@ class S7CommPlusConnection:
             0x0000,  # Reserved
             seq_num,
             self._session_id,
-            0x34 if function_code == FunctionCode.GET_MULTI_VARIABLES else 0x36,  # Transport flags (0x34 for reads)
+            # Transport flags: 0x34 for GetMultiVariables and Explore, 0x36 otherwise.
+            0x34 if function_code in (FunctionCode.GET_MULTI_VARIABLES, FunctionCode.EXPLORE) else 0x36,
         )
 
         # For V2+ with IntegrityId enabled, insert IntegrityId after header
@@ -526,10 +530,10 @@ class S7CommPlusConnection:
             integrity_id_bytes = encode_uint32_vlq(integrity_id)
             logger.debug(f"  IntegrityId: {'read' if is_read else 'write'}={integrity_id}")
 
-        # The IntegrityId is spliced in just before the payload's trailing UInt32 (i.e. at
-        # the end), not right after the header.
-        if integrity_id_bytes and len(payload) >= 4:
-            request = request_header + payload[:-4] + integrity_id_bytes + payload[-4:]
+        # The IntegrityId is spliced in just before the payload's trailing fill bytes
+        # (integrity_tail of them), not right after the header.
+        if integrity_id_bytes and len(payload) >= integrity_tail:
+            request = request_header + payload[:-integrity_tail] + integrity_id_bytes + payload[-integrity_tail:]
         else:
             request = request_header + integrity_id_bytes + payload
 
@@ -555,6 +559,16 @@ class S7CommPlusConnection:
                 self._integrity_id_read = (self._integrity_id_read + 1) & 0xFFFFFFFF
             else:
                 self._integrity_id_write = (self._integrity_id_write + 1) & 0xFFFFFFFF
+
+        # Large responses (e.g. Explore) are split across several S7CommPlus PDUs.
+        if reassemble:
+            data = self._recv_reassembled_payload()
+            if len(data) < 10:
+                from snap7.error import S7ConnectionError
+
+                raise S7ConnectionError("Response too short")
+            logger.debug(f"  Reassembled response ({len(data)} bytes), payload {len(data) - 10} bytes")
+            return bytes(data[10:])
 
         # Receive response
         response_frame = self._recv_s7_data()
@@ -595,6 +609,46 @@ class S7CommPlusConnection:
             logger.debug(f"  Trailer ({len(trailer)} bytes): {trailer.hex(' ')}")
 
         return resp_payload
+
+    def _recv_reassembled_payload(self) -> bytes:
+        """Receive a possibly-fragmented S7CommPlus response, returning its data section.
+
+        A large response is split into several S7CommPlus PDUs. Each fragment is
+        ``0x72 <ver> <len:2> <data:len>`` with no trailer; only the final fragment is
+        followed by the ``0x72 <ver> 0x0000`` trailer. We concatenate the data parts
+        of every fragment until the trailer is seen. Works for single-PDU responses
+        too (one fragment immediately followed by the trailer).
+        """
+        from snap7.error import S7ConnectionError
+
+        buf = bytearray()
+
+        def ensure(n: int) -> None:
+            while len(buf) < n:
+                chunk = self._recv_s7_data()
+                if not chunk:
+                    raise S7ConnectionError("Connection closed during response reassembly")
+                buf.extend(chunk)
+
+        data = bytearray()
+        while True:
+            ensure(4)
+            if buf[0] != 0x72:
+                raise S7ConnectionError("Expected S7CommPlus fragment header (0x72)")
+            frag_len = (buf[2] << 8) | buf[3]
+            del buf[:4]
+            if frag_len == 0:
+                break  # standalone trailer (defensive)
+            ensure(frag_len)
+            data.extend(buf[:frag_len])
+            del buf[:frag_len]
+            # The next 4 bytes are either the trailer (0x72 ver 0x0000) or the next
+            # fragment's header (0x72 ver len>0).
+            ensure(4)
+            if buf[0] == 0x72 and buf[2] == 0 and buf[3] == 0:
+                del buf[:4]  # consume trailer — last fragment
+                break
+        return bytes(data)
 
     def _init_ssl(self) -> None:
         """Send InitSSL request to prepare the connection.
